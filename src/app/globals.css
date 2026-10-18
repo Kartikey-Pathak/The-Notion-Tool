@@ -1,8 +1,14 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #191919;
+  --foreground: #ebebeb;
+  --sidebar-bg: #202020;
+  --card-bg: #252525;
+  --border-color: #2f2f2f;
+  --hover-bg: rgba(255, 255, 255, 0.055);
+  --active-bg: rgba(255, 255, 255, 0.09);
+  color-scheme: dark;
 }
 
 @theme inline {
@@ -12,15 +18,84 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+:root,
+html,
+body {
+  color-scheme: dark;
+}
+
+/* Firefox and non-webkit fallback */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+    scrollbar-width: thin;
   }
+}
+
+* {
+  box-sizing: border-box;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden;
+}
+
+/* ==========================================================================
+   Notion Dark Theme Custom Scrollbars (Webkit / Chromium / Safari / Edge)
+   ========================================================================== */
+::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track,
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb,
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.18);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  min-height: 28px;
+}
+
+::-webkit-scrollbar-thumb:hover,
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.35);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:active,
+*::-webkit-scrollbar-thumb:active {
+  background-color: rgba(255, 255, 255, 0.52);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner,
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::selection {
+  background: rgba(35, 131, 226, 0.38);
+  color: #ffffff;
+}
+
+/* Notion editor placeholder */
+[data-placeholder]:empty::before {
+  content: attr(data-placeholder);
+  color: #666666;
+  pointer-events: none;
+  font-style: normal;
 }
