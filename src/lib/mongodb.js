@@ -1,85 +1,156 @@
 import { MongoClient } from 'mongodb';
-import fs from 'fs';
-import path from 'path';
+import crypto from 'crypto';
+import { cookies } from 'next/headers';
 
-// Path to local configuration file (ignored in .gitignore)
-const CONFIG_FILE_PATH = path.join(process.cwd(), '.notion-config.json');
+export const SESSION_COOKIE_NAME = 'notion_mongodb_session';
 
-let cachedClient = null;
-let cachedDb = null;
-let cachedDbName = null;
+// Stable encryption key derived from environment secret or a secure fallback
+const SESSION_SECRET = process.env.SESSION_SECRET || 'notion_workspace_secure_session_secret_key_2026';
+const ENCRYPTION_KEY = crypto.createHash('sha256').update(SESSION_SECRET).digest();
+
+export const SESSION_COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax',
+  path: '/',
+  maxAge: 30 * 24 * 60 * 60, // 30 days
+};
 
 /**
- * Read connection configuration from environment or local config file
+ * Encrypt connection configuration into an authenticated token (AES-256-GCM)
  */
-export function getSavedConfig() {
-  // Priority 1: Environment variable if set
-  if (process.env.MONGODB_URI) {
-    return {
-      uri: process.env.MONGODB_URI,
-      dbName: process.env.MONGODB_DB_NAME || 'notion_workspace',
-      source: 'env'
-    };
-  }
+export function encryptSession(data) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  const jsonStr = JSON.stringify(data);
+  let encrypted = cipher.update(jsonStr, 'utf8', 'base64url');
+  encrypted += cipher.final('base64url');
+  const tag = cipher.getAuthTag();
 
-  // Priority 2: Local config file (.notion-config.json)
-  if (fs.existsSync(CONFIG_FILE_PATH)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
-      if (data && data.uri) {
+  return `${iv.toString('base64url')}.${tag.toString('base64url')}.${encrypted}`;
+}
+
+/**
+ * Decrypt and verify connection configuration from session token
+ */
+export function decryptSession(token) {
+  if (!token || typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+
+  try {
+    const iv = Buffer.from(parts[0], 'base64url');
+    const tag = Buffer.from(parts[1], 'base64url');
+    const encrypted = parts[2];
+
+    const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+    decipher.setAuthTag(tag);
+    let decrypted = decipher.update(encrypted, 'base64url', 'utf8');
+    decrypted += decipher.final('utf8');
+
+    return JSON.parse(decrypted);
+  } catch (err) {
+    return null;
+  }
+}
+
+// Multi-client connection cache keyed by SHA256 of uri + dbName
+// Preserved across hot-reloads in development via globalThis
+const globalWithMongo = globalThis;
+if (!globalWithMongo._mongoClientCache) {
+  globalWithMongo._mongoClientCache = new Map();
+}
+const clientCache = globalWithMongo._mongoClientCache;
+
+/**
+ * Read connection configuration from the active user's session cookie
+ */
+export async function getSavedConfig() {
+  try {
+    const cookieStore = await cookies();
+    const sessionCookie = cookieStore.get(SESSION_COOKIE_NAME);
+    if (sessionCookie && sessionCookie.value) {
+      const session = decryptSession(sessionCookie.value);
+      if (session && session.uri) {
         return {
-          uri: data.uri,
-          dbName: data.dbName || 'notion_workspace',
-          source: 'file'
+          uri: session.uri,
+          dbName: session.dbName || 'notion_workspace',
+          source: 'session'
         };
       }
-    } catch (err) {
-      console.error('Error reading .notion-config.json:', err);
     }
+  } catch (err) {
+    // cookies() may throw if invoked outside of a request context
   }
 
   return null;
 }
 
 /**
- * Save connection configuration safely to local file
+ * Encrypt and store user connection configuration in an HTTP-only session cookie
  */
-export function saveConfig(uri, dbName = 'notion_workspace') {
+export async function saveSessionConfig(uri, dbName = 'notion_workspace') {
   const cleanDbName = (dbName && dbName.trim()) ? dbName.trim() : 'notion_workspace';
-  const data = {
+  const token = encryptSession({
     uri: uri.trim(),
     dbName: cleanDbName,
-    updatedAt: new Date().toISOString()
-  };
-  fs.writeFileSync(CONFIG_FILE_PATH, JSON.stringify(data, null, 2), 'utf8');
-  // Reset cached client to force re-connection
-  cachedClient = null;
-  cachedDb = null;
-  cachedDbName = null;
+    createdAt: new Date().toISOString()
+  });
+
+  try {
+    const cookieStore = await cookies();
+    cookieStore.set(SESSION_COOKIE_NAME, token, SESSION_COOKIE_OPTIONS);
+  } catch (e) {
+    // Handled in route handler via response.cookies
+  }
+
+  return token;
 }
 
+export const saveConfig = saveSessionConfig;
+
 /**
- * Remove saved configuration (disconnect)
+ * Disconnect user session and close client connection
  */
-export function removeConfig() {
-  if (fs.existsSync(CONFIG_FILE_PATH)) {
-    try {
-      fs.unlinkSync(CONFIG_FILE_PATH);
-    } catch (err) {
-      console.error('Error deleting .notion-config.json:', err);
+export async function clearSessionConfig(uri = null, dbName = null) {
+  try {
+    let targetUri = uri;
+    let targetDb = dbName;
+    if (!targetUri) {
+      const existing = await getSavedConfig();
+      if (existing) {
+        targetUri = existing.uri;
+        targetDb = existing.dbName;
+      }
     }
-  }
-  if (cachedClient) {
-    try {
-      cachedClient.close();
-    } catch (e) {
-      // ignore
+    if (targetUri) {
+      const cacheKey = crypto
+        .createHash('sha256')
+        .update(`${targetUri.trim()}:::${targetDb || 'notion_workspace'}`)
+        .digest('hex');
+      if (clientCache.has(cacheKey)) {
+        const entry = clientCache.get(cacheKey);
+        try {
+          await entry.client.close();
+        } catch (e) {
+          // ignore
+        }
+        clientCache.delete(cacheKey);
+      }
     }
+  } catch (e) {
+    // ignore
   }
-  cachedClient = null;
-  cachedDb = null;
-  cachedDbName = null;
+
+  try {
+    const cookieStore = await cookies();
+    cookieStore.delete(SESSION_COOKIE_NAME);
+  } catch (e) {
+    // Handled in route handler via response.cookies
+  }
 }
+
+export const removeConfig = clearSessionConfig;
 
 /**
  * Test a MongoDB URI without saving
@@ -134,33 +205,59 @@ export async function testConnection(uri, dbName = 'notion_workspace') {
 }
 
 /**
- * Connect to MongoDB and return db instance
+ * Connect to MongoDB and return db instance for the current user's session
  */
-export async function connectToDatabase() {
-  const config = getSavedConfig();
-  if (!config) {
+export async function connectToDatabase(customConfig = null) {
+  const config = customConfig || await getSavedConfig();
+  if (!config || !config.uri) {
     return { db: null, client: null, isConnected: false };
   }
 
-  if (cachedClient && cachedDb && cachedDbName === config.dbName) {
-    return { db: cachedDb, client: cachedClient, isConnected: true };
+  const cleanDbName = (config.dbName && config.dbName.trim()) ? config.dbName.trim() : 'notion_workspace';
+  const cacheKey = crypto
+    .createHash('sha256')
+    .update(`${config.uri.trim()}:::${cleanDbName}`)
+    .digest('hex');
+
+  if (clientCache.has(cacheKey)) {
+    const cached = clientCache.get(cacheKey);
+    cached.lastUsed = Date.now();
+    return { db: cached.db, client: cached.client, isConnected: true };
   }
 
-  const client = new MongoClient(config.uri, {
+  // Manage cache size: LRU eviction if > 20 connections in this runtime instance
+  if (clientCache.size >= 20) {
+    let oldestKey = null;
+    let oldestTime = Infinity;
+    for (const [key, val] of clientCache.entries()) {
+      if (val.lastUsed < oldestTime) {
+        oldestTime = val.lastUsed;
+        oldestKey = key;
+      }
+    }
+    if (oldestKey) {
+      const entry = clientCache.get(oldestKey);
+      try {
+        await entry.client.close();
+      } catch (e) {
+        // ignore
+      }
+      clientCache.delete(oldestKey);
+    }
+  }
+
+  const client = new MongoClient(config.uri.trim(), {
     serverSelectionTimeoutMS: 5000,
     connectTimeoutMS: 5000,
   });
 
   try {
     await client.connect();
-    const db = client.db(config.dbName);
-    cachedClient = client;
-    cachedDb = db;
-    cachedDbName = config.dbName;
+    const db = client.db(cleanDbName);
+    clientCache.set(cacheKey, { client, db, lastUsed: Date.now() });
     return { db, client, isConnected: true };
   } catch (err) {
-    cachedClient = null;
-    cachedDb = null;
+    clientCache.delete(cacheKey);
     throw err;
   }
 }

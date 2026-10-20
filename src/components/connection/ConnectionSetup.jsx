@@ -143,7 +143,7 @@ export default function ConnectionSetup({ onConnected }) {
             <div className="flex items-start gap-2.5 text-xs text-[#808080]">
               <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
               <span>
-                <strong>Zero credential leakage:</strong> Your URI is stored exclusively in a secure, local-first configuration file ignored by Git. It is never exposed in browser bundles or client APIs.
+                <strong>Encrypted session isolation:</strong> Your MongoDB URI is encrypted (AES-256-GCM) in a secure, HTTP-only session cookie. It is never stored on disk, never shared across users, and never exposed to client JavaScript.
               </span>
             </div>
 

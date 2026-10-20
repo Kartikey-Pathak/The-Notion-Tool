@@ -1,16 +1,18 @@
 import { NextResponse } from 'next/server';
 import {
   getSavedConfig,
-  saveConfig,
-  removeConfig,
+  saveSessionConfig,
+  clearSessionConfig,
   testConnection,
   connectToDatabase,
-  initializeWorkspace
+  initializeWorkspace,
+  SESSION_COOKIE_NAME,
+  SESSION_COOKIE_OPTIONS
 } from '@/lib/mongodb';
 
 export async function GET() {
   try {
-    const config = getSavedConfig();
+    const config = await getSavedConfig();
     if (!config) {
       return NextResponse.json({
         isConnected: false,
@@ -18,12 +20,12 @@ export async function GET() {
       });
     }
 
-    // Attempt a light ping
-    const { db } = await connectToDatabase();
+    // Light ping using session config
+    const { db } = await connectToDatabase(config);
     if (!db) {
       return NextResponse.json({
         isConnected: false,
-        message: 'Could not connect with saved configuration.'
+        message: 'Could not connect with saved session.'
       });
     }
 
@@ -41,7 +43,7 @@ export async function GET() {
       isConnected: true,
       dbName: config.dbName,
       host,
-      source: config.source || 'file'
+      source: 'session'
     });
   } catch (err) {
     return NextResponse.json({
@@ -67,18 +69,22 @@ export async function POST(request) {
     const cleanDbName = (dbName && dbName.trim()) ? dbName.trim() : 'notion_workspace';
     const testResult = await testConnection(uri, cleanDbName);
 
-    // 2. If valid, save config server-side
-    saveConfig(uri, cleanDbName);
-
-    // 3. Connect and initialize collections & default workspace
-    const { db } = await connectToDatabase();
+    // 2. Connect and initialize collections & default workspace
+    const { db } = await connectToDatabase({ uri: uri.trim(), dbName: cleanDbName });
     await initializeWorkspace(db);
 
-    return NextResponse.json({
+    // 3. Encrypt and store configuration in session cookie
+    const token = await saveSessionConfig(uri, cleanDbName);
+
+    const response = NextResponse.json({
       success: true,
       host: testResult.host,
       dbName: cleanDbName
     });
+
+    response.cookies.set(SESSION_COOKIE_NAME, token, SESSION_COOKIE_OPTIONS);
+
+    return response;
   } catch (err) {
     return NextResponse.json(
       { error: err.message || 'Failed to connect to MongoDB.' },
@@ -89,11 +95,19 @@ export async function POST(request) {
 
 export async function DELETE() {
   try {
-    removeConfig();
-    return NextResponse.json({
+    await clearSessionConfig();
+
+    const response = NextResponse.json({
       success: true,
       message: 'Disconnected from MongoDB database.'
     });
+
+    response.cookies.set(SESSION_COOKIE_NAME, '', {
+      ...SESSION_COOKIE_OPTIONS,
+      maxAge: 0
+    });
+
+    return response;
   } catch (err) {
     return NextResponse.json(
       { error: err.message || 'Failed to disconnect.' },

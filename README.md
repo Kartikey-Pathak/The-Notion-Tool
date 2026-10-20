@@ -26,7 +26,7 @@ This project provides a full-featured workspace environment: a nested sidebar pa
 
 ## Features
 
-- **Zero-Account Database Ownership**: Connect your own MongoDB Atlas cluster or local MongoDB instance (`mongodb://127.0.0.1:27017`). Credentials remain strictly server-side.
+- **Zero-Account Multi-User Database Isolation**: Each visitor brings their own MongoDB connection URI. Credentials are encrypted into an authenticated HTTP-only session cookie (AES-256-GCM), ensuring full multi-user isolation when hosted publicly on Vercel or locally.
 - **Collapsible Sidebar**: Hierarchical page tree with infinite subpage nesting, expand/collapse arrows, favorites, home, inbox status, templates, and trash.
 - **Block-Based Document Editor**:
   - 16 block types: Paragraph, Heading 1, 2, 3, Bullet list, Numbered list, To-do checkbox, Toggle block, Quote, Callout box, Divider, Code snippet (with syntax languages & 1-click copy), Image by URL, Web Bookmark, Simple Table, and Sub-page links.
@@ -68,14 +68,15 @@ When you first open the app, you will see the connection screen:
 
 ---
 
-## How Database Storage & Security Works
+## How Database Storage & Security Works (Vercel Multi-User Support)
 
-A MongoDB connection string contains sensitive credentials. This application follows a strict **zero-leakage** security model:
+A MongoDB connection string contains sensitive credentials. This application follows a strict **zero-leakage and multi-user isolation** security model:
 
-1. **Client Isolation**: The browser client **never** receives the connection string, passwords, or raw queries. API responses return only sanitized status (`{ isConnected: true, host: "cluster0...", dbName: "notion_workspace" }`).
-2. **Server-Side File Storage**: Submitted connection strings are written exclusively to `.notion-config.json` on the server filesystem.
-3. **Git Protection**: `.notion-config.json` and `.env*` are explicitly added to `.gitignore`. They cannot be pushed to version control.
-4. **Environment Variable Override**: You can bypass the UI setup by adding `MONGODB_URI` and `MONGODB_DB_NAME` to `.env.local`.
+1. **Client Isolation**: The browser client **never** receives raw credentials or queries. API responses return only sanitized status (`{ isConnected: true, host: "cluster0...", dbName: "notion_workspace" }`).
+2. **Encrypted Session Cookies**: Each user enters their own MongoDB connection string. Upon successful verification, the credentials are encrypted server-side using **AES-256-GCM** and stored in an **HTTP-only, secure, SameSite=Lax** session cookie.
+3. **Stateless & Vercel-Ready**: No configuration or credentials are written to the server's filesystem, making the app fully compatible with Vercel and serverless hosting.
+4. **Isolated Connection Pools**: The server manages connection pooling keyed by the hash of each user's credentials, ensuring complete data isolation between concurrent users.
+5. **Optional Secret Key**: Set `SESSION_SECRET` in your environment (e.g. Vercel Project Settings) for custom AES encryption key derivation.
 
 ---
 
@@ -85,7 +86,7 @@ Here is what every file and folder in the project does:
 
 ```
 my-app/
-├── .gitignore                          # Excludes node_modules, build output, .env*, and .notion-config.json
+├── .gitignore                          # Excludes node_modules, build output, and local environment files
 ├── jsconfig.json                       # Sets up path alias: '@/*' points to './src/*'
 ├── next.config.mjs                     # Next.js build configuration
 ├── package.json                        # Dependencies (next, react, react-dom, mongodb, lucide-react)
@@ -150,7 +151,7 @@ my-app/
     │       ├── TrashDialog.jsx         # Trash modal to inspect, restore, or permanently remove deleted pages
     │       └── TemplatePicker.jsx      # Template selector with preview of blocks and 1-click instantiation
     └── lib/
-        ├── mongodb.js                  # MongoClient connection manager, configuration loader, and seed data
+        ├── mongodb.js                  # AES-256-GCM session encryptor, connection pool cache, and starter seeds
         └── templates.js                # Built-in productivity templates (Meeting Notes, Journal, Planning, etc.)
 ```
 
@@ -159,10 +160,10 @@ my-app/
 ## Core Architectural Flows
 
 ### A. Connection & Initial Seeding Flow
-1. **User Enters URI**: On opening the app without an existing connection, [`WorkspaceLayout.jsx`](file:///d:/THE_NOTION/my-app/src/components/workspace/WorkspaceLayout.jsx) renders [`ConnectionSetup.jsx`](file:///d:/THE_NOTION/my-app/src/components/connection/ConnectionSetup.jsx).
+1. **User Enters URI**: On opening the app without an existing session, [`WorkspaceLayout.jsx`](file:///d:/THE_NOTION/my-app/src/components/workspace/WorkspaceLayout.jsx) renders [`ConnectionSetup.jsx`](file:///d:/THE_NOTION/my-app/src/components/connection/ConnectionSetup.jsx).
 2. **Ping Test**: The client sends a `POST /api/connection`. The server calls `testConnection()` in [`src/lib/mongodb.js`](file:///d:/THE_NOTION/my-app/src/lib/mongodb.js) to execute `db.command({ ping: 1 })`.
-3. **Local Config Storage**: If the ping succeeds, `saveConfig()` stores the URI in `.notion-config.json`.
-4. **Automatic Seeding**: `initializeWorkspace()` checks if the database is empty. If empty, it creates indexes and seeds:
+3. **Encrypted Session Cookie**: If the ping succeeds, an encrypted HTTP-only session cookie is set on the response, isolating this user's connection.
+4. **Automatic Seeding**: `initializeWorkspace()` checks if the user's database is empty. If empty, it creates indexes and seeds:
    - Default workspace record (`workspaces` collection).
    - "Welcome to your Workspace" page with starter guide blocks.
    - "Quick Notes" subpage demonstrating page hierarchy.
@@ -369,9 +370,38 @@ my-app/
 
 ## Build & Production Deployment
 
-To create an optimized production build:
+To create an optimized production build locally:
 ```bash
 npm run build
 npm run start
 ```
 All routes are verified to compile statically and dynamically with 0 TypeScript/ESLint errors.
+
+---
+
+## Deploying to Vercel
+
+This application is built for seamless serverless deployment on Vercel with per-user session isolation:
+
+1. **Push to GitHub**:
+   Commit and push your repository to GitHub:
+   ```bash
+   git add .
+   git commit -m "Add multi-user MongoDB session support for Vercel"
+   git push origin main
+   ```
+
+2. **Import into Vercel**:
+   - Sign in to [Vercel](https://vercel.com) and click **"Add New Project"**.
+   - Import your repository. Vercel will automatically detect **Next.js**.
+
+3. **Environment Variables (Optional)**:
+   - `SESSION_SECRET`: *(Optional)* A random secret string used to derive the AES-256 encryption key. If not set, a secure default fallback is used.
+
+4. **Click Deploy**:
+   - Vercel will build and deploy the app instantly.
+
+5. **Multi-User Experience on Vercel**:
+   - **User A** visits your site $\rightarrow$ Sees the connection screen $\rightarrow$ Enters their MongoDB Atlas URI $\rightarrow$ Encrypted into an HTTP-only session cookie $\rightarrow$ Accesses only their database.
+   - **User B** visits your site from another browser $\rightarrow$ Sees their own clean connection screen $\rightarrow$ Enters their own MongoDB URI $\rightarrow$ Completely isolated from User A.
+   - Disconnecting clears the cookie and resets the session to the connection screen immediately.

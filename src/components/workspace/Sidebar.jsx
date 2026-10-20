@@ -59,11 +59,10 @@ export default function Sidebar({
 
       {/* Sidebar Container */}
       <aside
-        className={`fixed md:relative inset-y-0 left-0 z-30 h-screen bg-[#202020] border-r border-[#262626] flex flex-col select-none transition-all duration-200 ease-in-out shrink-0 ${
-          isOpen
+        className={`fixed md:relative inset-y-0 left-0 z-40 h-screen bg-[#202020] border-r border-[#262626] flex flex-col select-none transition-all duration-200 ease-in-out shrink-0 ${isOpen
             ? 'w-60 translate-x-0 opacity-100'
             : '-translate-x-full md:translate-x-0 md:w-0 md:border-r-0 overflow-hidden pointer-events-none opacity-0'
-        }`}
+          }`}
       >
         {/* Workspace Switcher / Header */}
         <div className="h-12 px-3 border-b border-[#262626] flex items-center justify-between shrink-0">
@@ -176,11 +175,10 @@ export default function Sidebar({
                     <button
                       key={page.id}
                       onClick={() => onSelectPage(page.id)}
-                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left transition-colors ${
-                        activePageId === page.id
+                      className={`w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left transition-colors ${activePageId === page.id
                           ? 'bg-white/10 text-white font-medium'
                           : 'text-[#9b9b9b] hover:bg-white/5 hover:text-[#ebebeb]'
-                      }`}
+                        }`}
                     >
                       <span className="text-sm shrink-0">{page.icon || '📄'}</span>
                       <span className="truncate flex-1">{page.title || 'Untitled'}</span>
