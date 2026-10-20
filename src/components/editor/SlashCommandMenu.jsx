@@ -21,7 +21,7 @@ import {
 } from 'lucide-react';
 
 export const COMMAND_ITEMS = [
-  { id: 'paragraph', title: 'Text', desc: 'Just start writing with plain text.', icon: Type, keywords: ['p', 'text', 'paragraph'] },
+  { id: 'paragraph', title: 'Text', desc: 'Plain text (Shift+Enter inserts a new line).', icon: Type, keywords: ['p', 'text', 'paragraph'] },
   { id: 'heading1', title: 'Heading 1', desc: 'Big section heading.', icon: Heading1, keywords: ['h1', 'heading', 'title'] },
   { id: 'heading2', title: 'Heading 2', desc: 'Medium section heading.', icon: Heading2, keywords: ['h2', 'subheading'] },
   { id: 'heading3', title: 'Heading 3', desc: 'Small section heading.', icon: Heading3, keywords: ['h3', 'subheading'] },
@@ -123,6 +123,10 @@ export default function SlashCommandMenu({
             </button>
           );
         })}
+      </div>
+
+      <div className="mt-1 pt-1.5 px-2.5 pb-0.5 border-t border-[#303030] text-[10px] text-[#777777]">
+        Tip: Press <kbd className="px-1 py-0.5 rounded bg-[#1e1e1e] border border-[#383838] text-[9px] text-[#a0a0a0]">Shift+Enter</kbd> to insert a new line
       </div>
     </div>
   );

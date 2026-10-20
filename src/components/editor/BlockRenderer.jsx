@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   GripVertical,
   Plus,
@@ -69,6 +69,78 @@ const getBgColorClass = (bgId) => {
   return item ? item.class : '';
 };
 
+// Auto-resizing textarea that wraps text to new lines and dynamically expands height
+function AutoResizeTextarea({
+  value,
+  onChange,
+  onKeyDown,
+  onInput,
+  placeholder,
+  className = '',
+  style = {},
+  autoFocus = false,
+  onFocused,
+  rows = 1,
+  ...props
+}) {
+  const textareaRef = useRef(null);
+
+  const resize = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
+
+  useEffect(() => {
+    resize();
+  }, [value, resize]);
+
+  useEffect(() => {
+    if (autoFocus && textareaRef.current) {
+      textareaRef.current.focus();
+      const len = textareaRef.current.value.length;
+      textareaRef.current.setSelectionRange(len, len);
+      onFocused?.();
+    }
+  }, [autoFocus, onFocused]);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      resize();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [resize]);
+
+  return (
+    <textarea
+      ref={textareaRef}
+      value={value}
+      onChange={(e) => {
+        onChange?.(e);
+        resize();
+      }}
+      onInput={(e) => {
+        onInput?.(e);
+        e.target.style.height = 'auto';
+        e.target.style.height = `${e.target.scrollHeight}px`;
+      }}
+      onKeyDown={onKeyDown}
+      placeholder={placeholder}
+      rows={rows}
+      className={`overflow-hidden resize-none ${className}`}
+      style={{
+        fieldSizing: 'content',
+        ...style
+      }}
+      {...props}
+    />
+  );
+}
+
 export default function BlockRenderer({
   blocks,
   onChangeBlocks,
@@ -80,6 +152,7 @@ export default function BlockRenderer({
   const [openMenuIndex, setOpenMenuIndex] = useState(null);
   const [openColorIndex, setOpenColorIndex] = useState(null);
   const [copiedCodeId, setCopiedCodeId] = useState(null);
+  const [focusTargetId, setFocusTargetId] = useState(null);
 
   // Close menus on outside click
   useEffect(() => {
@@ -100,14 +173,16 @@ export default function BlockRenderer({
 
   // Insert a new block after index
   const insertBlockAfter = (index, type = 'paragraph') => {
+    const newId = `b_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const newBlock = {
-      id: `b_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      id: newId,
       type,
       content: '',
       properties: type === 'callout' ? { icon: '💡', color: 'blue' } : {}
     };
     const newBlocks = [...blocks];
     newBlocks.splice(index + 1, 0, newBlock);
+    setFocusTargetId(newId);
     onChangeBlocks(newBlocks);
     setActiveSlashIndex(null);
   };
@@ -130,15 +205,21 @@ export default function BlockRenderer({
   const deleteBlock = (index) => {
     if (blocks.length <= 1) {
       // Keep at least one empty block
+      const newId = `b_${Date.now()}`;
       onChangeBlocks([
         {
-          id: `b_${Date.now()}`,
+          id: newId,
           type: 'paragraph',
           content: '',
           properties: {}
         }
       ]);
+      setFocusTargetId(newId);
       return;
+    }
+    const prevBlock = blocks[index - 1];
+    if (prevBlock) {
+      setFocusTargetId(prevBlock.id);
     }
     const newBlocks = blocks.filter((_, i) => i !== index);
     onChangeBlocks(newBlocks);
@@ -179,10 +260,40 @@ export default function BlockRenderer({
 
   // Handle typing inside text blocks (Enter, Backspace, Slash command)
   const handleTextKeyDown = (e, index, block) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // If slash menu is active, let it handle Enter/Arrows
+    if (activeSlashIndex !== null && (e.key === 'Enter' || e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      return;
+    }
+
+    if (e.key === 'Enter') {
+      if (e.shiftKey) {
+        // Shift+Enter: Soft break (new line in the SAME block)
+        return;
+      }
+      if (e.ctrlKey) {
+        // Ctrl+Enter: Also allow new line in the SAME block
+        e.preventDefault();
+        const start = e.target.selectionStart;
+        const end = e.target.selectionEnd;
+        const oldVal = block.content || '';
+        const newVal = oldVal.substring(0, start) + '\n' + oldVal.substring(end);
+        updateBlock(index, { content: newVal });
+        requestAnimationFrame(() => {
+          if (e.target) {
+            e.target.selectionStart = e.target.selectionEnd = start + 1;
+          }
+        });
+        return;
+      }
+
+      // Enter without Shift/Ctrl: Create a new block below
       e.preventDefault();
-      insertBlockAfter(index, block.type === 'bullet_list' || block.type === 'numbered_list' || block.type === 'todo' ? block.type : 'paragraph');
-    } else if (e.key === 'Backspace' && block.content === '') {
+      const nextType =
+        block.type === 'bullet_list' || block.type === 'numbered_list' || block.type === 'todo'
+          ? block.type
+          : 'paragraph';
+      insertBlockAfter(index, nextType);
+    } else if (e.key === 'Backspace' && (block.content === '' || block.content === undefined)) {
       if (block.type !== 'paragraph') {
         e.preventDefault();
         turnBlockInto(index, 'paragraph');
@@ -383,54 +494,57 @@ export default function BlockRenderer({
             <div className={`w-full min-w-0 ${getBgColorClass(block.properties?.bgColor)}`}>
               {/* Paragraph */}
               {block.type === 'paragraph' && (
-                <textarea
+                <AutoResizeTextarea
+                  autoFocus={focusTargetId === block.id}
+                  onFocused={() => setFocusTargetId(null)}
                   value={block.content || ''}
                   onChange={(e) => handleTextChange(e, index)}
                   onKeyDown={(e) => handleTextKeyDown(e, index, block)}
-                  placeholder="Type '/' for commands..."
-                  rows={1}
-                  className={`w-full bg-transparent text-sm placeholder-[#555555] resize-none focus:outline-none leading-relaxed py-1 block ${getTextColorClass(block.properties?.textColor)}`}
-                  style={{ height: 'auto', minHeight: '1.75rem' }}
-                  onInput={(e) => {
-                    e.target.style.height = 'auto';
-                    e.target.style.height = `${e.target.scrollHeight}px`;
-                  }}
+                  placeholder="Type '/' for commands, Shift+Enter for new line..."
+                  className={`w-full bg-transparent text-sm placeholder-[#555555] focus:outline-none leading-relaxed py-1 block ${getTextColorClass(block.properties?.textColor)}`}
+                  style={{ minHeight: '1.75rem' }}
                 />
               )}
 
               {/* Heading 1 */}
               {block.type === 'heading1' && (
-                <input
-                  type="text"
+                <AutoResizeTextarea
+                  autoFocus={focusTargetId === block.id}
+                  onFocused={() => setFocusTargetId(null)}
                   value={block.content || ''}
                   onChange={(e) => handleTextChange(e, index)}
                   onKeyDown={(e) => handleTextKeyDown(e, index, block)}
                   placeholder="Heading 1"
-                  className={`w-full bg-transparent text-2xl font-bold placeholder-[#555555] focus:outline-none pt-4 pb-1 ${getTextColorClass(block.properties?.textColor)}`}
+                  className={`w-full bg-transparent text-2xl font-bold placeholder-[#555555] focus:outline-none pt-4 pb-1 block ${getTextColorClass(block.properties?.textColor)}`}
+                  style={{ minHeight: '2.5rem' }}
                 />
               )}
 
               {/* Heading 2 */}
               {block.type === 'heading2' && (
-                <input
-                  type="text"
+                <AutoResizeTextarea
+                  autoFocus={focusTargetId === block.id}
+                  onFocused={() => setFocusTargetId(null)}
                   value={block.content || ''}
                   onChange={(e) => handleTextChange(e, index)}
                   onKeyDown={(e) => handleTextKeyDown(e, index, block)}
                   placeholder="Heading 2"
-                  className={`w-full bg-transparent text-xl font-semibold placeholder-[#555555] focus:outline-none pt-3 pb-1 ${getTextColorClass(block.properties?.textColor)}`}
+                  className={`w-full bg-transparent text-xl font-semibold placeholder-[#555555] focus:outline-none pt-3 pb-1 block ${getTextColorClass(block.properties?.textColor)}`}
+                  style={{ minHeight: '2rem' }}
                 />
               )}
 
               {/* Heading 3 */}
               {block.type === 'heading3' && (
-                <input
-                  type="text"
+                <AutoResizeTextarea
+                  autoFocus={focusTargetId === block.id}
+                  onFocused={() => setFocusTargetId(null)}
                   value={block.content || ''}
                   onChange={(e) => handleTextChange(e, index)}
                   onKeyDown={(e) => handleTextKeyDown(e, index, block)}
                   placeholder="Heading 3"
-                  className={`w-full bg-transparent text-lg font-medium placeholder-[#555555] focus:outline-none pt-2 pb-1 ${getTextColorClass(block.properties?.textColor)}`}
+                  className={`w-full bg-transparent text-lg font-medium placeholder-[#555555] focus:outline-none pt-2 pb-1 block ${getTextColorClass(block.properties?.textColor)}`}
+                  style={{ minHeight: '1.75rem' }}
                 />
               )}
 
@@ -438,13 +552,15 @@ export default function BlockRenderer({
               {block.type === 'bullet_list' && (
                 <div className="flex items-start gap-2.5 py-1">
                   <span className="text-sm text-[#808080] select-none mt-0.5">•</span>
-                  <textarea
+                  <AutoResizeTextarea
+                    autoFocus={focusTargetId === block.id}
+                    onFocused={() => setFocusTargetId(null)}
                     value={block.content || ''}
                     onChange={(e) => handleTextChange(e, index)}
                     onKeyDown={(e) => handleTextKeyDown(e, index, block)}
                     placeholder="List item..."
-                    rows={1}
-                    className={`w-full bg-transparent text-sm placeholder-[#555555] resize-none focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                    className={`w-full bg-transparent text-sm placeholder-[#555555] focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                    style={{ minHeight: '1.5rem' }}
                   />
                 </div>
               )}
@@ -453,13 +569,15 @@ export default function BlockRenderer({
               {block.type === 'numbered_list' && (
                 <div className="flex items-start gap-2.5 py-1">
                   <span className="text-xs text-[#808080] font-mono select-none mt-1">1.</span>
-                  <textarea
+                  <AutoResizeTextarea
+                    autoFocus={focusTargetId === block.id}
+                    onFocused={() => setFocusTargetId(null)}
                     value={block.content || ''}
                     onChange={(e) => handleTextChange(e, index)}
                     onKeyDown={(e) => handleTextKeyDown(e, index, block)}
                     placeholder="Numbered item..."
-                    rows={1}
-                    className={`w-full bg-transparent text-sm placeholder-[#555555] resize-none focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                    className={`w-full bg-transparent text-sm placeholder-[#555555] focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                    style={{ minHeight: '1.5rem' }}
                   />
                 </div>
               )}
@@ -477,15 +595,17 @@ export default function BlockRenderer({
                     }
                     className="w-4 h-4 rounded mt-1 bg-[#252525] border-[#444444] text-[#2383e2] focus:ring-0 focus:ring-offset-0 cursor-pointer accent-[#2383e2]"
                   />
-                  <textarea
+                  <AutoResizeTextarea
+                    autoFocus={focusTargetId === block.id}
+                    onFocused={() => setFocusTargetId(null)}
                     value={block.content || ''}
                     onChange={(e) => handleTextChange(e, index)}
                     onKeyDown={(e) => handleTextKeyDown(e, index, block)}
                     placeholder="To-do item..."
-                    rows={1}
-                    className={`w-full bg-transparent text-sm placeholder-[#555555] resize-none focus:outline-none leading-relaxed ${
+                    className={`w-full bg-transparent text-sm placeholder-[#555555] focus:outline-none leading-relaxed ${
                       block.properties?.checked ? 'line-through text-[#777777]' : getTextColorClass(block.properties?.textColor)
                     }`}
+                    style={{ minHeight: '1.5rem' }}
                   />
                 </div>
               )}
@@ -509,18 +629,21 @@ export default function BlockRenderer({
                         <ChevronRight className="w-3.5 h-3.5" />
                       )}
                     </button>
-                    <input
-                      type="text"
+                    <AutoResizeTextarea
+                      autoFocus={focusTargetId === block.id}
+                      onFocused={() => setFocusTargetId(null)}
                       value={block.content || ''}
                       onChange={(e) => handleTextChange(e, index)}
+                      onKeyDown={(e) => handleTextKeyDown(e, index, block)}
                       placeholder="Toggle header..."
                       className={`w-full bg-transparent text-sm font-medium placeholder-[#555555] focus:outline-none ${getTextColorClass(block.properties?.textColor)}`}
+                      style={{ minHeight: '1.5rem' }}
                     />
                   </div>
 
                   {block.properties?.isOpen && (
                     <div className="pl-6 pt-2 border-l border-[#2f2f2f] ml-2 mt-1">
-                      <textarea
+                      <AutoResizeTextarea
                         value={block.properties?.nestedContent || ''}
                         onChange={(e) =>
                           updateBlock(index, {
@@ -528,8 +651,8 @@ export default function BlockRenderer({
                           })
                         }
                         placeholder="Hidden toggle content..."
-                        rows={2}
-                        className={`w-full bg-transparent text-sm placeholder-[#555555] resize-none focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                        className={`w-full bg-transparent text-sm placeholder-[#555555] focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                        style={{ minHeight: '2.5rem' }}
                       />
                     </div>
                   )}
@@ -539,13 +662,15 @@ export default function BlockRenderer({
               {/* Quote */}
               {block.type === 'quote' && (
                 <div className="border-l-2 border-[#555555] pl-3 py-1 my-1">
-                  <textarea
+                  <AutoResizeTextarea
+                    autoFocus={focusTargetId === block.id}
+                    onFocused={() => setFocusTargetId(null)}
                     value={block.content || ''}
                     onChange={(e) => handleTextChange(e, index)}
                     onKeyDown={(e) => handleTextKeyDown(e, index, block)}
                     placeholder="Empty quote..."
-                    rows={1}
-                    className={`w-full bg-transparent text-sm italic placeholder-[#555555] resize-none focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                    className={`w-full bg-transparent text-sm italic placeholder-[#555555] focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                    style={{ minHeight: '1.5rem' }}
                   />
                 </div>
               )}
@@ -565,12 +690,15 @@ export default function BlockRenderer({
                   >
                     {block.properties?.icon || '💡'}
                   </button>
-                  <textarea
+                  <AutoResizeTextarea
+                    autoFocus={focusTargetId === block.id}
+                    onFocused={() => setFocusTargetId(null)}
                     value={block.content || ''}
                     onChange={(e) => handleTextChange(e, index)}
+                    onKeyDown={(e) => handleTextKeyDown(e, index, block)}
                     placeholder="Callout text..."
-                    rows={1}
-                    className={`w-full bg-transparent text-sm placeholder-[#555555] resize-none focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                    className={`w-full bg-transparent text-sm placeholder-[#555555] focus:outline-none leading-relaxed ${getTextColorClass(block.properties?.textColor)}`}
+                    style={{ minHeight: '1.5rem' }}
                   />
                 </div>
               )}
@@ -623,12 +751,14 @@ export default function BlockRenderer({
                       )}
                     </button>
                   </div>
-                  <textarea
+                  <AutoResizeTextarea
+                    autoFocus={focusTargetId === block.id}
+                    onFocused={() => setFocusTargetId(null)}
                     value={block.content || ''}
                     onChange={(e) => updateBlock(index, { content: e.target.value })}
                     placeholder="// Write or paste code snippet here..."
-                    rows={4}
-                    className="w-full p-3 bg-transparent text-xs font-mono text-[#d4d4d4] placeholder-[#555555] resize-y focus:outline-none leading-relaxed"
+                    className="w-full p-3 bg-transparent text-xs font-mono text-[#d4d4d4] placeholder-[#555555] focus:outline-none leading-relaxed"
+                    style={{ minHeight: '5rem' }}
                   />
                 </div>
               )}
